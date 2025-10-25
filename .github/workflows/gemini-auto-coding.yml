@@ -1,8 +1,8 @@
-name: Gemini Auto Codegen from Issue
+name: Gemini Auto Codegen from Issue (Admin Only)
 
 on:
   issues:
-    types: [opened, edited]  # Issue作成・編集時にトリガー
+    types: [opened, edited]  # Issueが作成・編集されたとき
   workflow_dispatch:          # 手動実行も可能
 
 permissions:
@@ -14,7 +14,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Check if issue author is repository owner
+        id: check_author
+        run: |
+          AUTHOR="${{ github.event.issue.user.login }}"
+          OWNER="${{ github.repository_owner }}"
+          echo "Author: $AUTHOR"
+          echo "Owner: $OWNER"
+          if [ "$AUTHOR" != "$OWNER" ]; then
+            echo "❌ This issue was not created by the repository owner. Exiting."
+            exit 78  # neutral exit, workflow stops here
+          fi
+
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Cache npm
@@ -34,25 +46,15 @@ jobs:
       - name: Prepare prompt from issue
         run: |
           mkdir -p .github/gemini
-          ISSUE_TITLE="${{ github.event.issue.title }}"
-          ISSUE_BODY="${{ github.event.issue.body }}"
-          echo "# Issue: $ISSUE_TITLE" > .github/gemini/prompt.md
+          echo "# Issue: ${{ github.event.issue.title }}" > .github/gemini/prompt.md
           echo "" >> .github/gemini/prompt.md
-          echo "$ISSUE_BODY" >> .github/gemini/prompt.md
-
-          HISTORY_FILE=".github/gemini/history.md"
-          if [ ! -f "$HISTORY_FILE" ]; then
-            echo "# 出力履歴" > "$HISTORY_FILE"
-          fi
-          PROMPT_COMBINED=$(printf "%s\n\n---\n# これまでの出力履歴（同じ内容を繰り返さないでください）\n%s" \
-            "$(cat .github/gemini/prompt.md)" "$(cat $HISTORY_FILE)")
-          echo "$PROMPT_COMBINED" > .github/gemini/combined_prompt.md
+          echo "${{ github.event.issue.body }}" >> .github/gemini/prompt.md
 
       - name: Run Gemini to generate code
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          PROMPT=$(cat .github/gemini/combined_prompt.md)
+          PROMPT=$(cat .github/gemini/prompt.md)
           MAX_RETRIES=3
           for i in $(seq 1 $MAX_RETRIES); do
             if RESPONSE=$(gemini "$PROMPT"); then
@@ -76,15 +78,10 @@ jobs:
           cp .github/gemini/response.txt "$OUTPUT_FILE"
           echo "Generated code saved to $OUTPUT_FILE"
 
-      - name: Append response to history
-        run: |
-          echo -e "\n\n## $(date '+%Y-%m-%d %H:%M:%S') の出力（Issue #${{ github.event.issue.number }}）\n" >> .github/gemini/history.md
-          cat .github/gemini/response.txt >> .github/gemini/history.md
-
       - name: Commit and push generated code
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add generated/ .github/gemini/history.md
+          git add generated/
           git commit -m "✨ Gemini auto codegen from issue #${{ github.event.issue.number }}" || echo "No changes to commit"
           git push
