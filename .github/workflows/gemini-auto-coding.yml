@@ -2,7 +2,7 @@ name: Gemini Auto Codegen from Issue (Admin Only)
 
 on:
   issues:
-    types: [opened, edited]  # Issueが作成・編集されたとき
+    types: [opened, reopened]  # Issueが作成・再オープンされたとき
   workflow_dispatch:          # 手動実行も可能
 
 permissions:
