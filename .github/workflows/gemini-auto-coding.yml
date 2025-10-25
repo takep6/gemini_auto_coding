@@ -1,0 +1,90 @@
+name: Gemini Auto Codegen from Issue
+
+on:
+  issues:
+    types: [opened, edited]  # Issue作成・編集時にトリガー
+  workflow_dispatch:          # 手動実行も可能
+
+permissions:
+  contents: write
+  issues: read
+
+jobs:
+  run-gemini-codegen:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-gemini
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Install gemini-cli
+        run: npm install -g @google/gemini-cli
+
+      - name: Prepare prompt from issue
+        run: |
+          mkdir -p .github/gemini
+          ISSUE_TITLE="${{ github.event.issue.title }}"
+          ISSUE_BODY="${{ github.event.issue.body }}"
+          echo "# Issue: $ISSUE_TITLE" > .github/gemini/prompt.md
+          echo "" >> .github/gemini/prompt.md
+          echo "$ISSUE_BODY" >> .github/gemini/prompt.md
+
+          HISTORY_FILE=".github/gemini/history.md"
+          if [ ! -f "$HISTORY_FILE" ]; then
+            echo "# 出力履歴" > "$HISTORY_FILE"
+          fi
+          PROMPT_COMBINED=$(printf "%s\n\n---\n# これまでの出力履歴（同じ内容を繰り返さないでください）\n%s" \
+            "$(cat .github/gemini/prompt.md)" "$(cat $HISTORY_FILE)")
+          echo "$PROMPT_COMBINED" > .github/gemini/combined_prompt.md
+
+      - name: Run Gemini to generate code
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          PROMPT=$(cat .github/gemini/combined_prompt.md)
+          MAX_RETRIES=3
+          for i in $(seq 1 $MAX_RETRIES); do
+            if RESPONSE=$(gemini "$PROMPT"); then
+              echo "$RESPONSE" > .github/gemini/response.txt
+              break
+            else
+              echo "Gemini API call failed. Retrying ${i}/${MAX_RETRIES}..."
+              sleep 30
+            fi
+          done
+          if [ ! -f .github/gemini/response.txt ]; then
+            echo "All Gemini API call attempts failed. Exiting."
+            exit 1
+          fi
+
+      - name: Save generated code
+        run: |
+          mkdir -p generated
+          TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+          OUTPUT_FILE="generated/gemini_output_${TIMESTAMP}.txt"
+          cp .github/gemini/response.txt "$OUTPUT_FILE"
+          echo "Generated code saved to $OUTPUT_FILE"
+
+      - name: Append response to history
+        run: |
+          echo -e "\n\n## $(date '+%Y-%m-%d %H:%M:%S') の出力（Issue #${{ github.event.issue.number }}）\n" >> .github/gemini/history.md
+          cat .github/gemini/response.txt >> .github/gemini/history.md
+
+      - name: Commit and push generated code
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add generated/ .github/gemini/history.md
+          git commit -m "✨ Gemini auto codegen from issue #${{ github.event.issue.number }}" || echo "No changes to commit"
+          git push
